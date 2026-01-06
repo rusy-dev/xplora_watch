@@ -20,5 +20,5 @@
     "marshmallow-enum",
     "security>=1.2"
   ],
-  "version": "v2.14.3"
+  "version": "2.14.4-silentFix"
 }
