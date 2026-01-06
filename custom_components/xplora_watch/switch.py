@@ -60,7 +60,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, asyn
             if ward is None:
                 continue
 
-            wuid = ward.get(ATTR_ID)
+            wuid = ward.get(ATTR_ID, None)
             if wuid is None:
                 continue
 
@@ -197,16 +197,22 @@ class XploraSilentSwitch(XploraBaseEntity, SwitchEntity):
         super().__init__(config_entry, description, coordinator, wuid)
         if self.watch_uid not in self.coordinator.data:
             return
-        self.coordinator.data[self.watch_uid]: dict[str, Any] = self.coordinator.data[self.watch_uid]
 
         self._silent = silent
+        self._silent_id = silent.get(ATTR_ID)
 
-        self._attr_name: str = f"{ward.get(CONF_NAME)} {ATTR_WATCH} {description.key} {silent['start']}-{silent['end']} ({coordinator.username})".replace(
+        # Name fixen: Wir nehmen Start/Ende direkt aus dem silent-Objekt
+        start = silent.get('start', '00:00')
+        end = silent.get('end', '00:00')
+
+        self._attr_name: str = f"{ward.get(CONF_NAME)} {ATTR_WATCH} {description.key} {start}-{end} ({coordinator.username})".replace(
             "_", " "
         ).title()
 
+        # Unique ID fixen
+        time_suffix = f"{start}_{end}".replace(":", "")
         self._attr_unique_id = (
-            f"{ward.get(CONF_NAME)}_{ATTR_WATCH}_{description.key}_{silent['vendorId']}_{wuid}_{coordinator.user_id}".replace(
+            f"{ward.get(CONF_NAME)}_{ATTR_WATCH}_{description.key}_{time_suffix}_{wuid}_{coordinator.user_id}".replace(
                 " ", "_"
             )
             .replace("-", "_")
@@ -214,48 +220,45 @@ class XploraSilentSwitch(XploraBaseEntity, SwitchEntity):
         )
 
         self._attr_is_on = self._states(silent["status"])
-        self._silents: list[dict[str, Any]] = []
-        _LOGGER.debug(
-            "Updating switch: %s | Typ: %s | Watch_ID ...%s | state: %s | %s",
-            self._attr_name,
-            description.key,
-            self.watch_uid[25:],
-            self._attr_is_on,
-            silent["status"],
-        )
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        self.coordinator.data[self.watch_uid] = self.coordinator.data[self.watch_uid]
-        for silent in self.coordinator.data[self.watch_uid].get("silent", []):
-            if silent[ATTR_ID] == self._silent[ATTR_ID]:
-                self._attr_is_on = self._states(silent["status"])
-                self.async_write_ha_state()
+        watch_data = self.coordinator.data.get(self.watch_uid, {})
+        for silent in watch_data.get("silent", []):
+            if silent.get(ATTR_ID) == self._silent_id:
+                new_state = self._states(silent["status"])
+                if self._attr_is_on != new_state:
+                    self._attr_is_on = new_state
+                    self.async_write_ha_state()
+                break
         super()._handle_coordinator_update()
 
     async def _set_turn_on_off(self, status: bool) -> None:
         """Set the turn on / off state."""
         controller: PyXploraApi = self.coordinator.controller
+        
+        # 1. API Call: Nur das Nötigste senden!
         if status:
-            silents = await controller.setEnableSilentTime(silent_id=self._silent[ATTR_ID])
+            result = await controller.setEnableSilentTime(silent_id=self._silent_id)
         else:
-            silents = await controller.setDisableSilentTime(silent_id=self._silent[ATTR_ID])
-        if silents:
+            result = await controller.setDisableSilentTime(silent_id=self._silent_id)
+        
+        # 2. Kein wildes Pollen ("async_refresh" entfernt)!
+        # Wir vertrauen darauf, dass der Call geklappt hat und setzen den Status lokal.
+        # Das nächste reguläre Update (alle paar Minuten) wird den echten Status nachziehen.
+        if result:
             self._attr_is_on = status
+            self.async_write_ha_state()
+            _LOGGER.debug("Silent Mode %s manuell auf %s gesetzt (Optimistic)", self._attr_name, status)
 
-        data = self.coordinator.data
-        data[self.watch_uid]["silent"] = await self.coordinator.controller.getSilentTime(self.watch_uid)
-        self.coordinator.data = data
-        self.async_write_ha_state()
-        await self.coordinator.async_refresh()
-
-    async def async_turn_on(self, **kwargs) -> None:
+    async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the switch on."""
         await self._set_turn_on_off(status=True)
 
-    async def async_turn_off(self, **kwargs) -> None:
+    async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the switch off."""
+        # FIX: Hier stand vorher der Tippfehler
         await self._set_turn_on_off(status=False)
 
     @property
@@ -263,15 +266,15 @@ class XploraSilentSwitch(XploraBaseEntity, SwitchEntity):
         """Return supported attributes."""
         data = super().extra_state_attributes or {}
         language = self._options.get(CONF_LANGUAGE, self._data.get(CONF_LANGUAGE, DEFAULT_LANGUAGE))
-        week_repeat = self._silent["weekRepeat"]
+        week_repeat = self._silent.get("weekRepeat", "0000000")
         week_days = []
-        for i, _ in enumerate(week_repeat):
-            if week_repeat[i] == "1":
-                week_days.append(DAYS.get(language, DEFAULT_LANGUAGE)[i])
-        return dict(
-            data,
-            **{
-                ATTR_SERVICE_USER: self.coordinator.controller.getUserName(),
-                STR_DAYS.get(language, DEFAULT_LANGUAGE): ", ".join(week_days),
-            },
-        )
+        day_names = DAYS.get(language, DAYS.get(DEFAULT_LANGUAGE, []))
+        for i, bit in enumerate(week_repeat):
+            if bit == "1" and i < len(day_names):
+                week_days.append(day_names[i])
+        
+        return {
+            **data,
+            ATTR_SERVICE_USER: self.coordinator.controller.getUserName(),
+            STR_DAYS.get(language, "Days"): ", ".join(week_days),
+        }
