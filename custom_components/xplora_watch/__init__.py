@@ -15,7 +15,7 @@ from .coordinator import XploraDataUpdateCoordinator
 from .helper import create_service_yaml_file, create_www_directory, move_emojis_directory
 from .services import async_setup_services, async_unload_services
 
-PLATFORMS = [Platform.BINARY_SENSOR, Platform.DEVICE_TRACKER, Platform.NOTIFY, Platform.SENSOR, Platform.SWITCH]
+PLATFORMS = [Platform.BINARY_SENSOR, Platform.DEVICE_TRACKER, Platform.SENSOR, Platform.SWITCH]
 
 _LOGGER = logging.getLogger(__name__)
 
